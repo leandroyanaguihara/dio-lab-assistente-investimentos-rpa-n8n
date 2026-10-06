@@ -1,0 +1,343 @@
+{
+  "name": "My workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "Clientes",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "85c7ab5a-fcb3-40ab-8f79-20fda17417ec",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        -736,
+        -176
+      ],
+      "webhookId": "a23a7e95-11ed-4d7f-a9b3-a35fb1c42f7c"
+    },
+    {
+      "parameters": {
+        "url": "https://digitalinnovationone.github.io/dio-lab-assistente-investimentos-rpa-n8n/data.csv",
+        "options": {}
+      },
+      "id": "6623d402-4488-4869-8e2e-7d0118bf252b",
+      "name": "HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -592,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pega o CSV como \nconst input = $input.first().json;\nconst csvRaw = input.data ?? input.body ?? input;\nconst text = (typeof csvRaw === \"string\") ? csvRaw : JSON.stringify(csvRaw);\n\nconst lines = text.split(/\\r?\\n/).map(l => l.trim()).filter(Boolean);\nconst headers = lines[0].split(\",\").map(h => h.trim());\n\nconst investimentos = lines.slice(1).map(line => {\n  const cols = line.split(\",\").map(c => c.trim());\n  const obj = {};\n  headers.forEach((h, i) => obj[h] = cols[i] ?? \"\");\n\n  // normaliza minimo para numero\n  obj.minimo = Number(String(obj.minimo).replace(/[^\\d]/g, \"\")) || 0;\n\n  return obj;                                                 \n});\n\nreturn [{ json: { investimentos } }];"
+      },
+      "id": "0c3cd791-37ea-4128-ae35-c2f0271d1e63",
+      "name": "Code in JavaScript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -464,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d56de342-2c32-44d0-9e7f-3e5a99e6b9aa",
+              "leftValue": "={{ $json.to }}",
+              "rightValue": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+              "operator": {
+                "type": "string",
+                "operation": "regex"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c2a9115b-4b96-4d1c-a02e-d11f472c8ef8",
+      "name": "If",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        432,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "cb03c70b-09e1-42df-9868-0d0340b86805",
+      "name": "Merge",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -320,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Recebe do Merge: body.clientes (Webhook) + investimentos (CSV)\nconst data = $input.first().json;\nconst clientes = (data.body && data.body.clientes) || data.clientes || [];\nconst investimentos = data.investimentos || [];\n\n// Estimativa de IPCA anual usada para comparar produtos IPCA+ com prefixados\nconst IPCA_ESTIMADO = 4.5;\n\n// \"R$ 12.500,00\" -> 12500\nfunction parseSaldo(s) {\n  if (typeof s === 'number') return s;\n  const limpo = String(s || '').replace(/[^\\d,]/g, '').replace(',', '.');\n  return Number(limpo) || 0;\n}\n\n// \"13.0%\" -> 13 | \"IPCA+6.0%\" -> 10.5 | \"Variável\" -> null\nfunction rentabilidadeEstimada(r) {\n  const txt = String(r || '');\n  const num = parseFloat(txt.replace(/[^\\d.]/g, ''));\n  if (/ipca/i.test(txt)) return IPCA_ESTIMADO + (isNaN(num) ? 0 : num);\n  if (txt.indexOf('%') >= 0 && !isNaN(num)) return num;\n  return null;\n}\n\nconst justificativas = {\n  conservador: 'Perfil conservador: prioriza segurança e liquidez, então foi escolhida a opção de renda fixa com maior rentabilidade dentro do saldo.',\n  moderado: 'Perfil moderado: aceita um pouco mais de risco por retorno maior, então foi escolhida a opção com maior rentabilidade estimada dentro do saldo.',\n  arrojado: 'Perfil arrojado: busca crescimento no longo prazo em renda variável; fundos e ETFs diversificados têm prioridade sobre criptomoedas, que ficam como complemento.'\n};\n\nfunction formatBRL(v) {\n  return 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });\n}\n\nconst recomendacoes = clientes.map(cliente => {\n  const saldo = parseSaldo(cliente.saldo);\n  const perfil = String(cliente.perfil || '').trim();\n  const perfilKey = perfil.toLowerCase();\n\n  const doPerfil = investimentos.filter(inv => String(inv.perfil || '').toLowerCase() === perfilKey);\n  const acessiveis = doPerfil.filter(inv => Number(inv.minimo) <= saldo);\n\n  if (doPerfil.length === 0) {\n    return { nome: cliente.nome, email: cliente.email, perfil, saldo: cliente.saldo,\n      recomendacao: null, alternativas: [],\n      justificativa: 'Nenhum produto cadastrado para o perfil informado.' };\n  }\n\n  if (acessiveis.length === 0) {\n    const menor = doPerfil.slice().sort((a, b) => a.minimo - b.minimo)[0];\n    return { nome: cliente.nome, email: cliente.email, perfil, saldo: cliente.saldo,\n      recomendacao: null, alternativas: [],\n      justificativa: 'Saldo insuficiente para os produtos do perfil. A opção mais acessível é ' + menor.produto + ' (mínimo ' + formatBRL(menor.minimo) + ').' };\n  }\n\n  const ordenados = acessiveis.slice().sort((a, b) => {\n    const ra = rentabilidadeEstimada(a.rentabilidade);\n    const rb = rentabilidadeEstimada(b.rentabilidade);\n    if (ra !== null && rb !== null) return rb - ra;\n    if (ra !== null) return -1;\n    if (rb !== null) return 1;\n    // Renda variável: cripto por último, depois maior aporte mínimo (gestão mais diversificada) primeiro\n    const ca = /cripto/i.test(a.produto) ? 1 : 0;\n    const cb = /cripto/i.test(b.produto) ? 1 : 0;\n    if (ca !== cb) return ca - cb;\n    return b.minimo - a.minimo;\n  });\n\n  const melhor = ordenados[0];\n  return {\n    nome: cliente.nome,\n    email: cliente.email,\n    perfil,\n    saldo: cliente.saldo,\n    recomendacao: {\n      produto: melhor.produto,\n      minimo: melhor.minimo,\n      rentabilidade: melhor.rentabilidade\n    },\n    alternativas: ordenados.slice(1).map(i => i.produto),\n    justificativa: justificativas[perfilKey] || 'Opção com melhor rentabilidade dentro do saldo disponível.'\n  };\n});\n\nreturn [{ json: { total_clientes: recomendacoes.length, recomendacoes } }];"
+      },
+      "id": "6cbac5e1-e4d3-4a30-8303-702cf886dd95",
+      "name": "Recomendar Investimentos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -192,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transforma as recomendacoes em uma tabela: uma linha (item) por cliente\nconst data = $input.first().json;\nconst recomendacoes = data.recomendacoes || [];\n\nfunction formatBRL(v) {\n  return 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });\n}\n\nconst linhas = recomendacoes.map(r => {\n  const rec = r.recomendacao || {};\n  return {\n    json: {\n      'Cliente': r.nome || '',\n      'E-mail': r.email || '',\n      'Perfil': r.perfil || '',\n      'Saldo': r.saldo || '',\n      'Investimento Recomendado': rec.produto || 'Sem recomendação',\n      'Aporte Mínimo': rec.produto ? formatBRL(rec.minimo) : '-',\n      'Rentabilidade': rec.rentabilidade || '-',\n      'Alternativas': (r.alternativas || []).join(', ') || '-',\n      'Justificativa': r.justificativa || ''\n    }\n  };\n});\n\nreturn linhas;"
+      },
+      "id": "fc9c7364-fa6f-48db-8e6c-d1503750cf73",
+      "name": "Montar Tabela",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -64,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "GPT-4O"
+        },
+        "responses": {
+          "values": [
+            {
+              "content": "=Escreva um e-mail curto em pt-BR para o cliente abaixo, sem prometer ganhos e sem garantias.\n\nCliente:\nNome: {{ $json.Cliente }}\nPerfil:{{ $json.Perfil }}\nSaldo: {{ $json.Saldo }}\n\nRecomendação:{{ $json['Investimento Recomendado'] }}\nMínimo:{{ $json['Aporte Mínimo'] }}\nRentabilidade: {{ $json.Rentabilidade }}\nJustificativa: \n\nRetorne APENAS JSON com:\n{\n  \"subject\": \"...\",\n  \"text_body\": \"...\",\n  \"html_body\": \"...\"\n}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "81435c6e-3640-4448-b432-e75460231f99",
+      "name": "Message a model",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        64,
+        -160
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Lê o JSON do ChatGPT e monta um e-mail padronizado para o Gmail\n// Entrada: 1 item por cliente vindo de \"Message a model\"\n// Os dados do cliente vêm do nó \"Montar Tabela\" (mesma posição do item)\n\nconst respostas = $input.all();\nlet clientes = [];\ntry { clientes = $('Montar Tabela').all(); } catch (e) { clientes = []; }\n\nconst ASSUNTO_PADRAO = 'Sua recomendação de investimento';\nconst ASSINATURA = 'Equipe de Investimentos';\nconst AVISO = 'Esta mensagem tem caráter informativo e não constitui garantia de rentabilidade. Rentabilidade passada não garante resultados futuros.';\n\n// Pega o texto da resposta do ChatGPT em qualquer formato conhecido\nfunction extrairConteudo(j) {\n  if (j && j.output && j.output[0] && j.output[0].content && j.output[0].content[0]) {\n    return j.output[0].content[0].text;\n  }\n  if (j && j.message && j.message.content !== undefined) return j.message.content;\n  if (j && j.text !== undefined) return j.text;\n  if (j && j.content !== undefined) return j.content;\n  return j;\n}\n\n// Converte em objeto: aceita objeto pronto, JSON puro ou JSON dentro de bloco de código\nfunction parseJson(conteudo) {\n  if (conteudo && typeof conteudo === 'object') return conteudo;\n  let txt = String(conteudo || '').trim();\n  txt = txt.replace(/^\\s*[\\x60]{3}(?:json)?\\s*/i, '').replace(/\\s*[\\x60]{3}\\s*$/, '').trim();\n  try { return JSON.parse(txt); } catch (e) {}\n  const ini = txt.indexOf('{');\n  const fim = txt.lastIndexOf('}');\n  if (ini >= 0 && fim > ini) {\n    try { return JSON.parse(txt.slice(ini, fim + 1)); } catch (e) {}\n  }\n  return { text_body: txt };\n}\n\nfunction escapeHtml(s) {\n  return String(s || '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;');\n}\n\nfunction limparTexto(s) {\n  return String(s || '')\n    .replace(/\\r\\n/g, '\\n')\n    .replace(/[ \\t]+\\n/g, '\\n')\n    .replace(/\\n{3,}/g, '\\n\\n')\n    .trim();\n}\n\nfunction normalizarAssunto(s) {\n  let a = String(s || '').replace(/[\\r\\n\\t]+/g, ' ').replace(/\\s{2,}/g, ' ').trim();\n  a = a.replace(/^(assunto|subject)\\s*:\\s*/i, '');\n  if (!a) a = ASSUNTO_PADRAO;\n  if (a.length > 120) a = a.slice(0, 117).trim() + '...';\n  return a;\n}\n\nfunction normalizarEmail(s) {\n  return String(s || '').trim().toLowerCase();\n}\n\nfunction emailValido(s) {\n  return /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(s);\n}\n\nfunction textoParaHtml(txt) {\n  return limparTexto(txt)\n    .split(/\\n\\n/)\n    .map(p => '<p style=\"margin:0 0 12px 0;\">' + escapeHtml(p).replace(/\\n/g, '<br>') + '</p>')\n    .join('');\n}\n\n// Remove estruturas que não devem ir dentro do corpo (html/head/body/script/style)\nfunction limparHtml(html) {\n  return String(html || '')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, '')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, '')\n    .replace(/<\\/?(html|head|body)[^>]*>/gi, '')\n    .replace(/<!doctype[^>]*>/gi, '')\n    .trim();\n}\n\nfunction htmlParaTexto(html) {\n  return limparTexto(String(html || '')\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/p>/gi, '\\n\\n')\n    .replace(/<[^>]+>/g, '')\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&amp;/g, '&'));\n}\n\n// Moldura visual única para todos os e-mails\nfunction montarHtml(conteudo, cliente) {\n  const rec = cliente['Investimento Recomendado'];\n  const resumo = rec && rec !== 'Sem recomendação'\n    ? '<table role=\"presentation\" cellpadding=\"8\" cellspacing=\"0\" style=\"border-collapse:collapse;width:100%;margin:16px 0;font-size:14px;\">'\n      + '<tr style=\"background:#f3f6fb;\"><td style=\"border:1px solid #dde3ec;\"><b>Perfil</b></td><td style=\"border:1px solid #dde3ec;\">' + escapeHtml(cliente['Perfil']) + '</td></tr>'\n      + '<tr><td style=\"border:1px solid #dde3ec;\"><b>Investimento</b></td><td style=\"border:1px solid #dde3ec;\">' + escapeHtml(rec) + '</td></tr>'\n      + '<tr style=\"background:#f3f6fb;\"><td style=\"border:1px solid #dde3ec;\"><b>Aporte mínimo</b></td><td style=\"border:1px solid #dde3ec;\">' + escapeHtml(cliente['Aporte Mínimo']) + '</td></tr>'\n      + '<tr><td style=\"border:1px solid #dde3ec;\"><b>Rentabilidade</b></td><td style=\"border:1px solid #dde3ec;\">' + escapeHtml(cliente['Rentabilidade']) + '</td></tr>'\n      + '</table>'\n    : '';\n  return '<div style=\"font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#222;max-width:600px;\">'\n    + conteudo\n    + resumo\n    + '<p style=\"margin:16px 0 0 0;\">Atenciosamente,<br>' + escapeHtml(ASSINATURA) + '</p>'\n    + '<hr style=\"border:none;border-top:1px solid #ddd;margin:20px 0 8px 0;\">'\n    + '<p style=\"font-size:12px;color:#777;margin:0;\">' + escapeHtml(AVISO) + '</p>'\n    + '</div>';\n}\n\nreturn respostas.map((item, i) => {\n  const cliente = (clientes[i] && clientes[i].json) || {};\n  const dados = parseJson(extrairConteudo(item.json));\n\n  const nome = String(cliente['Cliente'] || '').trim();\n  const to = normalizarEmail(dados.to || dados.email || cliente['E-mail']);\n  const subject = normalizarAssunto(dados.subject || dados.assunto);\n\n  let corpoHtml = limparHtml(dados.html_body || dados.html || '');\n  let texto = limparTexto(dados.text_body || dados.text || dados.body || dados.corpo || '');\n  // Remove a despedida/assinatura gerada pelo ChatGPT (a assinatura padrão é adicionada depois)\n  corpoHtml = corpoHtml\n    .replace(/<p[^>]*>\\s*(atenciosamente|cordialmente|abraços|um abraço|saudações)[\\s\\S]*$/i, '')\n    .replace(/\\[(seu nome|nome)\\]/gi, '')\n    .trim();\n  texto = texto\n    .replace(/\\n\\s*(atenciosamente|cordialmente|abraços|um abraço|saudações)[\\s\\S]*$/i, '')\n    .replace(/\\[(seu nome|nome)\\]/gi, '')\n    .trim();\n\n  if (!corpoHtml && texto) corpoHtml = textoParaHtml(texto);\n  if (!texto && corpoHtml) texto = htmlParaTexto(corpoHtml);\n  if (!corpoHtml) {\n    texto = 'Olá' + (nome ? ', ' + nome : '') + '.\\n\\nSegue abaixo a recomendação de investimento de acordo com o seu perfil.';\n    corpoHtml = textoParaHtml(texto);\n  }\n\n  const html = montarHtml(corpoHtml, cliente);\n  const text = texto + '\\n\\nAtenciosamente,\\n' + ASSINATURA + '\\n\\n' + AVISO;\n\n  return {\n    json: {\n      to,\n      email_valido: emailValido(to),\n      nome,\n      subject,\n      html,\n      text\n    },\n    pairedItem: { item: i }\n  };\n});"
+      },
+      "id": "96408495-7d93-4d93-8b04-3d3193bbe700",
+      "name": "Code in JavaScript1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "f58de785-fa39-43a6-8f58-328a0146bf24",
+      "name": "Send a message",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        544,
+        -160
+      ],
+      "webhookId": "b4e1716b-e68e-41ec-9812-77adacd606ea",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Pii9iF0W4QSeZqDv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "dc44e127-c181-4f87-b064-99f2690cc6a4",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        688,
+        -160
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Recomendar Investimentos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recomendar Investimentos": {
+      "main": [
+        [
+          {
+            "node": "Montar Tabela",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar Tabela": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "ff1e256c-a443-448f-9b2e-3e82591c3c73",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "ee988bfd806259dbd47b178e4b580319c93d64c63c6c50cef21b82964b49faf9"
+  },
+  "nodeGroups": [],
+  "id": "VdE1y5vZOsjnOLCy",
+  "tags": []
+}
